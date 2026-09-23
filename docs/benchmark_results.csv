@@ -1,0 +1,5 @@
+storage_type,file_size_bytes,write_seconds,full_read_seconds,filtered_read_seconds,row_count,notes
+csv,14947456,0.6107999000000746,0.16034639999998035,0.2019583999999668,49897,typed on read; no native schema/compression
+json_lines,30639946,0.48971750000009706,0.4831807000000481,0.24050269999997909,49897,verbose (repeated keys); append/stream friendly
+parquet,5456459,0.09876290000011068,0.05105200000025434,0.02629960000012943,49897,columnar + compressed; predicate/column pushdown on read
+postgresql,16564224,,0.2874772000000121,0.05602660000022297,49897,"already loaded; write measured separately by load timing; size is pg_total_relation_size (table+indexes+toast), not a single file"
