@@ -45,8 +45,8 @@
    `docs/benchmark_interpretation.md` Q3). CSV is row-oriented, untyped text:
    every read must scan and re-parse every byte of every row regardless of
    which columns or filters are actually needed. That difference showed up
-   directly in this benchmark: Parquet's filtered read (0.029s) was roughly
-   8x faster than CSV's (0.238s) on identical data.
+   directly in this benchmark: Parquet's filtered read (0.0263s) was roughly
+   7.7x faster than CSV's (0.2020s) on identical data.
 
 5. **Why is a DAG that contains all transformation logic directly considered harder to maintain?**
    It couples orchestration concerns (scheduling, retries, dependency

@@ -5,14 +5,14 @@ Results from `data/benchmarks/benchmark_results.csv` (49,897 curated rows,
 
 | storage_type | file_size_bytes | write_s | full_read_s | filtered_read_s |
 |---|---|---|---|---|
-| csv | 15,097,146 | 0.820 | 0.211 | 0.238 |
-| json_lines | 30,839,534 | 0.647 | 0.561 | 0.272 |
-| parquet | 5,456,487 | 0.099 | 0.053 | 0.029 |
-| postgresql | 16,564,224 | n/a | 0.334 | 0.056 |
+| csv | 14,947,456 | 0.6108 | 0.1603 | 0.2020 |
+| json_lines | 30,639,946 | 0.4897 | 0.4834 | 0.2005 |
+| parquet | 5,456,450 | 0.0988 | 0.0511 | 0.0263 |
+| postgresql | 16,564,224 | n/a | 0.2875 | 0.0560 |
 
 ## 1. Which file format was smallest on disk, and why?
 
-Parquet, by roughly a 3x margin over CSV and 5.6x over JSON Lines. Parquet
+Parquet, by roughly a 2.7x margin over CSV and 5.6x over JSON Lines. Parquet
 stores data column-by-column with a typed, binary encoding and applies
 compression per column; a column of mostly-repeated strings (`status`,
 `category`) or numerics with low entropy compresses very well. CSV and JSON
@@ -22,7 +22,7 @@ the size of CSV for the same logical data.
 
 ## 2. Which representation was fastest for a full dataset read? Does that imply it is best for every workload?
 
-Parquet was fastest for a full read (0.053s) by a wide margin, mainly because
+Parquet was fastest for a full read (0.0511s) by a wide margin, mainly because
 it is smaller (less I/O) and pyarrow reads its typed binary layout directly
 into columnar arrays with no per-row text parsing. That does not make it
 best for *every* workload: a system that only ever appends one JSON event
@@ -35,10 +35,10 @@ workloads like this one.
 
 ## 3. How did filtered retrieval differ between Parquet and PostgreSQL? What additional PostgreSQL design could change the result?
 
-Parquet's filtered read (0.029s) used `pyarrow.parquet.read_table(..., filters=[...])`,
+Parquet's filtered read (0.0263s) used `pyarrow.parquet.read_table(..., filters=[...])`,
 which applies predicate pushdown against Parquet's per-row-group statistics --
 it can skip whole row groups that cannot contain `status='DELIVERED'` without
-decoding them. PostgreSQL's filtered read (0.056s) was a full sequential scan
+decoding them. PostgreSQL's filtered read (0.0560s) was a full sequential scan
 of `curated.sales_order_lines`, since no index exists on `status`. Adding
 `CREATE INDEX idx_sales_order_lines_status ON curated.sales_order_lines(status);`
 (or a partial index `WHERE status = 'DELIVERED'` if that single value is
