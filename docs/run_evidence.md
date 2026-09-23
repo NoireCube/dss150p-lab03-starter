@@ -1,121 +1,108 @@
 # Run Evidence
 
-Environment note: Docker Desktop/Docker Engine was not available in the
-sandbox this was built in (no access to Docker Hub). All commands below
-were instead run against an equivalent local stack -- Python 3.12 venv,
-a native PostgreSQL 16 server (same `sql/init/*.sql` schema), and a real
-local Apache Airflow 2.10.5 instance (installed temporarily into the same
-venv, `airflow dags test`, purely to validate the DAG) -- so every result
-below is a real, executed run, not a prediction. Please re-verify the
-`docker compose` commands on your machine per the README; the application
-code itself (`src/`) does not know or care whether Postgres is reached via
-`localhost` or the `postgres` Compose service name.
+Environment: Windows machine, Docker Desktop / Docker Engine version
+29.7.2 (build a7dcaa6). All commands and DAG runs below were executed
+against the real Docker Compose stack described in the README — a
+containerized PostgreSQL 16 (`dss150p-postgres`, port 5432) and a
+containerized Apache Airflow 2.10.5 instance (`dss150p-airflow-init`,
+`dss150p-airflow-webserver`, `dss150p-airflow-scheduler`) — not a
+substitute or native install. DAG runs were triggered through the
+Airflow web UI at `http://localhost:8080`, and evidence below is drawn
+from that UI (Grid view, Event Log, Run Details) plus real CLI output.
+Full chronological screenshots are in `docs/run_evidence_screenshots.pdf`.
 
 ## Week 4 (Goal 1)
 
-- Python version: `Python 3.12.3` (`python -m venv .venv` + `pip install -r requirements.txt`)
-- Key package versions: pandas==2.2.3, pyarrow==17.0.0, psycopg==3.2.3, python-dotenv==1.0.1, PyYAML==6.0.2
-- Git log evidence (see `git log --oneline --decorate`):
-  ```
-  d9932a3 feat(goal4): complete Airflow DAG with run_mode branching, retries, timeout, and failure callback
-  3bd5464 feat(goal3): CSV/JSON Lines/Parquet/PostgreSQL benchmark comparison and Parquet partitioning
-  697b6d1 test(goal2): add unit tests for dedupe, quarantine, curated join, and validation rules
-  4ce6dc3 feat(goal2): rerun-safe PostgreSQL UPSERT keyed on order_id via record_hash
-  1fb8a3c feat(goal2): implement staging/curated transformations and data validation
-  6cccfaf feat(goal2): wire extract stage and thin CLI orchestration
-  4af75bf merge: goal 1 reproducible environment
-  d25bf92 feat: add reproducible environment scaffolding (.env.example, .gitignore)
-  ```
-- `.env` is not tracked: `git check-ignore .env` returns `.env` (confirmed ignored).
-- Docker image/container evidence: not directly executable here -- see the
-  environment note above. `Dockerfile` / `docker-compose.yml` were reviewed
-  and are unmodified from the starter's working shape (they already build
-  a `python:3.11-slim` image and install `requirements.txt`); the pipeline
-  code has no Docker-specific dependency, so the venv run below is a valid
-  proxy. Please run `docker compose build pipeline && docker compose up -d postgres && docker compose run --rm pipeline python -m src.cli validate-env` yourself and attach that output.
-- External configuration evidence: `python -m src.cli validate-env` output:
-  ```
-  PROJECT_ROOT= /home/claude/dss150p-lab03-starter
-  DB host/database= localhost dss150p
-  Configured source= data/source
-  ```
-  No password appears in any committed `.py`/`.yml`/`.sql` file -- only in
-  the git-ignored `.env` (`config/settings.yml` holds no secrets; `src/config.py`
-  reads credentials from environment variables via `python-dotenv`).
+- Python version: `Python 3.12.10` — installed separately since the
+  system default (3.14) has no prebuilt `pandas`/`pyarrow` wheels yet.
+  venv at `.venv`, activated via `.venv\Scripts\Activate.ps1`.
+- Import check: `python -c "import pandas, pyarrow, psycopg; print('all good')"`
+  → `all good`
+- `.env` is not tracked: confirmed via `.gitignore`; real
+  `POSTGRES_PASSWORD` set, not the `change_me` placeholder.
+- Docker evidence: `docker --version` → `Docker version 29.7.2, build a7dcaa6`.
+  `docker compose up -d postgres` brought up container `dss150p-postgres`
+  on port 5432 (after removing a stale leftover container
+  `dss150p_lab_postgres` that was holding the port). Schema applied via
+  `Get-Content sql\init\01_warehouse_schema.sql | docker exec -i dss150p-postgres psql -U dss150p -d dss150p`
+  — confirmed clean with `SELECT COUNT(*) FROM curated.sales_order_lines;` → `0`.
 
 ## Week 5 (Goal 2)
 
-One `python -m src.cli load` run against the real source data
-(3,003 customer rows / 601 product rows / 50,005 order rows):
+`python -m src.cli extract` (run_id=`run_20260923T072401Z_9ce78de4`) then
+`python -m src.cli transform` (run_id=`run_20260923T072402Z_ca734532`)
+against the real source data:
 
-- Raw row counts (copied verbatim from `data/source/`): customers=3003, products=601, orders=50005
 - Staging row counts: customers=3000, products=599, orders=49998
-- Curated row count: 49897
-- Quarantine row counts: staging_quarantine=3 (1 invalid product price, 1 invalid
-  quantity, 1 disallowed status), curated_quarantine=101 (1 order referencing an
-  unknown customer_id, 1 order referencing an unknown product_id, and 99 orders
-  referencing product `P0078` -- the one product quarantined upstream for a
-  negative unit_price, so its order lines have no valid price to curate)
-- First load affected rows: `upsert_affected_rows=49897` (every row new)
-- Second rerun affected rows: `upsert_affected_rows=0` -- confirmed idempotent.
+- staging_quarantine rows=3
+- curated rows=49897
+- curated_quarantine rows=101
+
+`python -m src.cli load` run twice:
+- First run (run_id=`run_20260923T072500Z_3cf245d8`):
+  `upsert_affected_rows=49897`
+- Second run (run_id=`run_20260923T072516Z_09d8cb26`):
+  `upsert_affected_rows=0` — confirmed idempotent.
   Verified directly in PostgreSQL:
-  ```sql
+```sql
   SELECT COUNT(*) total, COUNT(DISTINCT order_id) distinct_orders
   FROM curated.sales_order_lines;
   -- total=49897, distinct_orders=49897 (no duplicates after two loads)
-  ```
+```
+- `python -m pytest tests/ -v` → 6 passed in 0.54s (dedupe, quarantine,
+  curated join, record_hash stability, validate rules)
 
 ## Week 6 (Goal 3)
 
-- Benchmark table attached: yes -- `data/benchmarks/benchmark_results.csv`
-  (5 repeats, median timing, status filter = DELIVERED):
+`python -m src.cli benchmark --repeats 5` (5 repeats, median timing,
+filtered read = status DELIVERED):
 
   | storage_type | file_size_bytes | write_s | full_read_s | filtered_read_s | row_count |
   |---|---|---|---|---|---|
-  | csv | 15,097,146 | 0.820 | 0.211 | 0.238 | 49,897 |
-  | json_lines | 30,839,534 | 0.647 | 0.561 | 0.272 | 49,897 |
-  | parquet | 5,456,487 | 0.099 | 0.053 | 0.029 | 49,897 |
-  | postgresql | 16,564,224 (pg_total_relation_size) | n/a (already loaded) | 0.334 | 0.056 | 49,897 |
+  | csv | 14,947,456 | 0.6108 | 0.1603 | 0.2020 | 49,897 |
+  | json_lines | 30,639,946 | 0.4897 | 0.4834 | 0.2005 | 49,897 |
+  | parquet | 5,456,450 | 0.0988 | 0.0511 | 0.0263 | 49,897 |
+  | postgresql | 16,564,224 (pg_total_relation_size) | n/a (already loaded) | 0.2875 | 0.0560 | 49,897 |
 
-  See `docs/benchmark_interpretation.md` for discussion.
-- Partition selected: order_year=2026 / order_month=1 (and separately tested 2026/2)
-- Partition row count: 2,506 rows for 2026-01
-- PostgreSQL verification query and result:
-  ```
-  partition year=2026 month=1: rows_read=2506 rows_affected=0
-  ```
-  (0 affected because these rows were already present from the full `load`
-  run moments earlier with an unchanged `record_hash` -- rerunning the same
-  partition load a second time also returned `rows_affected=0`, confirmed
-  via `SELECT * FROM audit.partition_loads WHERE partition_key='year=2026/month=1'`.)
+  Copied to `docs/benchmark_results.csv`. See
+  `docs/benchmark_interpretation.md` for discussion.
+- `python -m src.cli load-partition --year 2026 --month 1` run twice:
+  both times `rows_read=2506 rows_affected=0` — idempotent (rows already
+  present from the full load).
 
 ## Week 7 (Goal 4)
 
-- DAG ID: `dss150p_sales_pipeline`
-- Schedule: `0 2 * * *` (daily 02:00 UTC), `catchup=False`
-- Parameters used: `run_mode` (`full` | `partition`), `year`, `month`
-- Successful full-mode run: `airflow dags test dss150p_sales_pipeline 2026-01-01 -c '{"run_mode":"full","year":2026,"month":1}'`
-  -> `DagRun Finished ... state=success`; tasks executed:
-  `extract -> transform -> choose_load_branch -> load_full -> load_done -> validate`
-  (branch correctly skipped `load_partition`: log shows
-  `Skipping tasks [('load_partition', -1)]`).
-- Successful partition-mode run: `airflow dags test dss150p_sales_pipeline 2026-01-02 -c '{"run_mode":"partition","year":2026,"month":2}'`
-  -> `state=success`; log shows `Skipping tasks [('load_full', -1)]`, confirming
-  the opposite branch is honored.
-- Deliberate failure run: `orders.csv` temporarily renamed out of `data/source/`,
-  then `airflow dags test dss150p_sales_pipeline 2026-01-03 -c '{"run_mode":"full","year":2026,"month":1}'`.
-  The `extract` task raised `FileNotFoundError` (from `extract_sources`), was
-  retried twice per `retries: 2` (`Marking task as UP_FOR_RETRY` x2, ~1 minute
-  apart per `retry_delay`), then `Marking task as FAILED` on the third attempt.
-  `on_failure_callback` printed:
-  `TASK FAILED: dag_id=dss150p_sales_pipeline task_id=extract run_id=manual__2026-01-03T00:00:00+00:00 try_number=3 ...`.
-  Downstream tasks (`transform`, both load branches, `validate`) never ran.
-- Recovery run: `orders.csv` restored, DAG re-run for the same date
-  (`manual__2026-01-03T00:00:00+00:00`) -> `state=success`. PostgreSQL still
-  shows `total=49897, distinct_orders=49897` afterward -- recovery required
-  no manual database cleanup and created no duplicate business rows.
-- It is safe to simply re-trigger the whole DAG run (rather than clearing
-  only the failed task) after fixing the source problem: `extract` is a
-  plain file copy with no side effects to undo, and every downstream step
-  is UPSERT-based on `order_id`/`record_hash`, so re-running the full chain
-  from `extract` is idempotent by construction.
+- DAG ID: `dss150p_sales_pipeline`, Airflow v2.10.5
+  (`release:b93c3db6b1641b0840bd15ac7d05bc58ff2cccbf`)
+- Parameters: `run_mode` (`full` | `partition`), `year`, `month`
+- Full-mode run: triggered via the UI with `run_mode=full, year=2026,
+  month=1`. Triggered twice — Grid view confirms 2/2 total success
+  (first run start 2026-09-23 07:43:34 UTC, last run start 07:44:48 UTC);
+  `load_partition` correctly skipped both times.
+- Partition-mode run: triggered with `run_mode=partition, year=2026,
+  month=2` — Run ID `manual__2026-09-23T07:46:57+00:00`, status
+  success, duration 00:00:54; `load_full` correctly skipped.
+- (One trigger attempt hit a "CSRF token missing" Bad Request — session
+  had sat open too long; re-triggering fresh resolved it.)
+- Deliberate failure run: `orders.csv` temporarily renamed out of
+  `data/source/`, DAG triggered via the UI with `run_mode=full, year=2026,
+  month=1` (Run `2026-09-23, 07:52:07 UTC`, externally triggered=True).
+  Event Log confirms the `extract` task's retry sequence:
+  - try 1: running 07:52:13 UTC → failed 07:52:16 UTC
+  - try 2: running 07:53:16 UTC → failed 07:53:19 UTC
+  - try 3: running 07:54:20 UTC → failed 07:54:22 UTC
+
+  (three tries total, matching `retries: 2`, ~1 minute apart per
+  `retry_delay`). Run ended 07:54:27 UTC, total duration 00:02:13.
+  Downstream tasks (`transform`, `load_full`, `load_partition`,
+  `load_done`, `validate`) show `upstream_failed` in the Grid view and
+  never ran.
+- Recovery run: `orders.csv` restored, DAG re-triggered — Run ID
+  `manual__2026-09-23T08:02:34+00:00`, status success, duration 00:00:28
+  (started 08:02:39 UTC, ended 08:03:07 UTC). PostgreSQL still shows
+  `total=49897, distinct_orders=49897` afterward — recovery required no
+  manual database cleanup and created no duplicate rows.
+- Because `extract` is a plain file copy with no side effects to undo,
+  and every downstream step is UPSERT-based on `order_id`/`record_hash`,
+  simply re-triggering the whole DAG run after fixing the source problem
+  is safe and idempotent by construction.
