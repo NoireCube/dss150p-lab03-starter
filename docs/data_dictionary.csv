@@ -1,0 +1,31 @@
+layer,column_name,data_type,nullable,description,source_field,transformation_rule
+staging,customer_id,TEXT,No,Business key for a customer,customers.csv:customer_id,dedupe keeping max(updated_at)
+staging,email,TEXT,Yes,Normalized contact email,customers.csv:email,trim + lowercase; missing retained as null (visible quality condition)
+staging,city,TEXT,No,Normalized city name,customers.csv:city,trim + title-case
+staging,customer_tier,TEXT,No,Loyalty tier,customers.csv:customer_tier,passthrough
+staging,product_id,TEXT,No,Business key for a product,products.json:product_id,dedupe keeping max(updated_at)
+staging,category,TEXT,No,Flattened product category name,products.json:category.name,json_normalize flatten
+staging,department,TEXT,No,Flattened product department,products.json:category.department,json_normalize flatten
+staging,unit_price,NUMERIC,No,Product list price,products.json:unit_price,numeric coercion; negative/non-numeric rows quarantined
+staging,order_id,TEXT,No,Business key for an order,orders.csv:order_id,dedupe keeping max(updated_at)
+staging,order_timestamp,TIMESTAMPTZ,No,Order placement time,orders.csv:order_timestamp,parsed as UTC
+staging,quantity,INTEGER,No,Units ordered,orders.csv:quantity,numeric coercion; must be in [1,20] or quarantined
+staging,status,TEXT,No,Order lifecycle status,orders.csv:status,must be in allowed_order_statuses or quarantined
+staging,pipeline_run_id,TEXT,No,Run that produced this staging row,generated,src.common.audit.new_run_id()
+staging,staged_at_utc,TIMESTAMPTZ,No,When staging was computed,generated,src.common.audit.utc_now_iso()
+curated,order_id,TEXT,No,Primary key / UPSERT conflict key,staging.orders.order_id,passthrough
+curated,customer_city,TEXT,Yes,Customer's city at curation time,staging.customers.city,left join on customer_id
+curated,customer_tier,TEXT,Yes,Customer's loyalty tier,staging.customers.customer_tier,left join on customer_id
+curated,product_name,TEXT,Yes,Product display name,staging.products.name,left join on product_id
+curated,category,TEXT,Yes,Product category,staging.products.category,left join on product_id
+curated,brand,TEXT,Yes,Product brand,staging.products.brand,left join on product_id
+curated,gross_amount,NUMERIC(16,2),No,quantity * unit_price,computed,rounded to 2 dp
+curated,discount_amount,NUMERIC(16,2),No,gross_amount * discount_pct,computed,rounded to 2 dp
+curated,net_amount,NUMERIC(16,2),No,gross_amount - discount_amount,computed,rounded to 2 dp
+curated,source_updated_at,TIMESTAMPTZ,No,Most recent source update for the order,staging.orders.updated_at,passthrough
+curated,pipeline_run_id,TEXT,No,Run that produced this curated row,generated,src.common.audit.new_run_id()
+curated,processed_at_utc,TIMESTAMPTZ,No,When curated was computed,generated,src.common.audit.utc_now_iso()
+curated,record_hash,TEXT,No,SHA-256 over business fields only (excludes run_id/processed_at_utc),computed,src.common.audit.record_hash(); used as the UPSERT change-detection key
+quarantine,source_table,TEXT,No,Which stage/table produced the rejection,generated,"'customers' | 'products' | 'orders' | 'curated_join'"
+quarantine,reason,TEXT,No,Human-readable rejection reason,generated,see src/transform/staging.py and src/transform/curated.py
+quarantine,record,TEXT (JSON),No,Full original row as JSON for reprocessing/audit,generated,json.dumps(row.to_dict())
